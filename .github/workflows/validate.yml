@@ -1,0 +1,26 @@
+name: Validate
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - name: Check skills and marketplace manifest
+        run: ./scripts/validate.sh
+
+      - name: Check against the Agent Skills spec
+        run: gh skill publish --dry-run
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Check the skills package
+        run: ./scripts/package.sh

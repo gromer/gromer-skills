@@ -1,0 +1,20 @@
+{
+  "name": "gromer-skills",
+  "owner": {
+    "name": "Mike Gromer"
+  },
+  "metadata": {
+    "description": "Agent skills by Mike Gromer, installable in Claude, ChatGPT/Codex and GitHub Copilot"
+  },
+  "plugins": [
+    {
+      "name": "gromer-skills",
+      "description": "All skills in this repository",
+      "source": "./",
+      "strict": false,
+      "skills": [
+        "./skills/issue-flow"
+      ]
+    }
+  ]
+}
