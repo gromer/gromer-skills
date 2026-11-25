@@ -1,0 +1,8 @@
+# Keeps the actions the workflows use current. Each is pinned to a full commit
+# SHA with its version in a trailing comment; Dependabot updates both together.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
