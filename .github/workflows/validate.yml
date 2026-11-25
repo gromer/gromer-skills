@@ -12,7 +12,7 @@ jobs:
   validate:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
       - name: Check skills and marketplace manifest
         run: ./scripts/validate.sh
@@ -20,8 +20,26 @@ jobs:
       - name: Check that validation catches broken examples
         run: ./scripts/test-validate.sh
 
+      # The next step uses the runner's own GitHub CLI, and `gh skill` is in
+      # preview: it can change or be missing. The version is in the log so a
+      # failure can be traced to it.
+      - name: Show the version of the GitHub CLI
+        run: gh --version
+
+      # Asking for the command's help needs no network, and shows `--dry-run`
+      # only when the command exists. That tells a GitHub CLI without it apart
+      # from a real validation failure.
       - name: Check against the Agent Skills spec
-        run: gh skill publish --dry-run
+        run: |
+          help=$(gh skill publish --help 2>&1 || true)
+          case "$help" in
+            *--dry-run*) ;;
+            *)
+              echo "::error::gh skill is not available in this GitHub CLI ($(gh --version | head -n 1)), or it no longer has 'publish --dry-run'. The skills were not checked against the Agent Skills spec. This is not a validation failure."
+              exit 1
+              ;;
+          esac
+          gh skill publish --dry-run
         env:
           GH_TOKEN: ${{ github.token }}
 
