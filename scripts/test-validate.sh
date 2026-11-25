@@ -82,20 +82,35 @@ report() { # report <ok|FAILED> <case> <output>
   printf '%s\n' "$3" | sed 's/^/         /'
 }
 
+# Run validate.sh on the case's repository. Set with_locale to run it in that
+# locale, for the cases that must not depend on one.
+with_locale=""
+run_validate() {
+  if [ -n "$with_locale" ]; then
+    LC_ALL="$with_locale" "$validate" "$repo" 2>&1
+  else
+    "$validate" "$repo" 2>&1
+  fi
+}
+
+# The lines of validate.sh's output that are not its own. Every line it prints
+# starts with "error: ", "note: ", "ok: " or "validation failed: ". Anything
+# else is a raw message from bash, jq or yq reaching the reader.
+foreign_lines() { grep -vE '^(error: |note: |ok: |validation failed: )' <<<"$1"; }
+
 # must_fail <case> <text> [problems]: validate.sh must exit 1 and print an
 # error containing the text. It must report that many problems in all, one if
-# no number is given, so a case can't pass on some other error. A raw error
-# from bash, jq or yq does not count.
+# no number is given, so a case can't pass on some other error.
 must_fail() {
   local out status
-  out="$("$validate" "$repo" 2>&1)"
+  out="$(run_validate)"
   status=$?
   if [ "$status" -eq 1 ] && grep -F -- "$2" <<<"$out" | grep -q '^error: ' \
     && grep -qF "validation failed: ${3:-1} problem(s)" <<<"$out" \
-    && ! grep -qE '^jq: |^Error: |line [0-9]+: .*(command not found|syntax error|unbound variable)' <<<"$out"; then
+    && [ -z "$(foreign_lines "$out")" ]; then
     report ok "fails: $1" "$(grep -F -- "$2" <<<"$out")"
   else
-    report FAILED "fails: $1" "expected exit 1, ${3:-1} problem(s), and an error containing: $2
+    report FAILED "fails: $1" "expected exit 1, ${3:-1} problem(s), only validate.sh's own lines, and an error containing: $2
 got exit $status and:
 $out"
   fi
@@ -105,14 +120,27 @@ $out"
 # text if one is given.
 must_pass() {
   local out status
-  out="$("$validate" "$repo" 2>&1)"
+  out="$(run_validate)"
   status=$?
-  if [ "$status" -eq 0 ] && ! grep -q 'error' <<<"$out" && grep -qF -- "${2:-ok: }" <<<"$out"; then
+  if [ "$status" -eq 0 ] && ! grep -qE '^(error|validation failed): ' <<<"$out" \
+    && [ -z "$(foreign_lines "$out")" ] && grep -qF -- "${2:-ok: }" <<<"$out"; then
     report ok "passes: $1" "$(grep -F -- "${2:-ok: }" <<<"$out")"
   else
-    report FAILED "passes: $1" "expected exit 0 and: ${2:-ok: }
+    report FAILED "passes: $1" "expected exit 0, only validate.sh's own lines, and: ${2:-ok: }
 got exit $status and:
 $out"
+  fi
+}
+
+# must_print_no_note <case>: validate.sh must print no note.
+must_print_no_note() {
+  local out
+  out="$(run_validate)"
+  cases=$((cases + 1))
+  if grep -q '^note: ' <<<"$out"; then
+    report FAILED "passes: $1" "$out"
+  else
+    report ok "passes: $1" "(no note printed)"
   fi
 }
 
@@ -163,6 +191,22 @@ JSON
 must_fail "marketplace name empty" '.claude-plugin/marketplace.json: "name" is empty'
 
 new_repo
+write_manifest <<JSON
+{ "name": null, "owner": { "name": "Example Owner" }, "plugins": [$good_plugin] }
+JSON
+must_fail "marketplace name is null" '.claude-plugin/marketplace.json: "name" must be text, but it is null'
+
+new_repo
+write_manifest <<JSON
+{ "name": false, "owner": { "name": "Example Owner" }, "plugins": [$good_plugin] }
+JSON
+must_fail "marketplace name is false" '.claude-plugin/marketplace.json: "name" must be text, but it is false'
+
+new_repo
+printf '{ "name": "example\377", "owner": { "name": "Example Owner" }, "plugins": [%s] }\n' "$good_plugin" > "$repo/.claude-plugin/marketplace.json"
+must_fail "manifest with a byte that is not UTF-8" '.claude-plugin/marketplace.json is not UTF-8 text'
+
+new_repo
 write_manifest <<'JSON'
 {
   "name": "example-skills",
@@ -196,6 +240,12 @@ write_manifest <<'JSON'
 }
 JSON
 must_fail "marketplace owner.name empty" '"owner": "name" is empty'
+
+new_repo
+write_manifest <<JSON
+{ "name": "example-skills", "owner": { "name": 7 }, "plugins": [$good_plugin] }
+JSON
+must_fail "marketplace owner.name is a number" '"owner": "name" must be text, but it is a number (7)'
 
 new_repo
 write_manifest <<'JSON'
@@ -276,8 +326,20 @@ write_plugins "[$good_plugin, { \"name\": 5, \"source\": \"./\" }]"
 must_fail "plugin name is a number" 'plugin 2: "name" must be text, but it is a number (5)'
 
 new_repo
+write_plugins "[$good_plugin, { \"name\": \"\", \"source\": \"./\" }]"
+must_fail "plugin name empty" 'plugin 2: "name" is empty'
+
+new_repo
 write_plugins "[$good_plugin, { \"name\": \"elsewhere\", \"source\": \"\" }]"
 must_fail "plugin source empty" 'plugin 2 ("elsewhere"): "source" is empty'
+
+new_repo
+write_plugins "[$good_plugin, { \"name\": \"elsewhere\", \"source\": null }]"
+must_fail "plugin source is null" 'plugin 2 ("elsewhere"): "source" must be a path such as "./", or an object saying where to fetch the plugin from, but it is null'
+
+new_repo
+write_plugins "[$good_plugin, { \"name\": \"elsewhere\", \"source\": false }]"
+must_fail "plugin source is false" 'plugin 2 ("elsewhere"): "source" must be a path such as "./", or an object saying where to fetch the plugin from, but it is false'
 
 new_repo
 write_plugins "[$good_plugin, { \"name\": \"elsewhere\", \"source\": \"./\", \"skills\": 5 }]"
@@ -298,8 +360,16 @@ write_plugins '{ "example-skills": "./" }'
 must_fail "plugins is an object, not a list" '"plugins" must be a list, but it is an object'
 
 new_repo
+write_plugins '"example-skills"'
+must_fail "plugins is text, not a list" '"plugins" must be a list, but it is text'
+
+new_repo
+write_plugins '["example-skills"]'
+must_fail "plugins is a list of text, with no plugin entry" 'plugin 1 must be an object, but it is text' 2
+
+new_repo
 write_manifest <<'JSON'
-["example-skills"]
+[1, 2]
 JSON
 must_fail "manifest is a list, not an object" '.claude-plugin/marketplace.json must be a JSON object, but it is a list'
 
@@ -325,8 +395,12 @@ mv "$work/with-mark.json" "$repo/.claude-plugin/marketplace.json"
 must_pass "manifest that starts with a byte-order mark"
 
 new_repo
-write_plugins '[{ "name": "example-skills", "source": "./", "skills": "skills/good-skill/" }]'
-must_pass "skills given as one path, with no ./ and a trailing slash"
+write_plugins '[{ "name": "example-skills", "source": "./", "skills": "./skills/good-skill" }]'
+must_pass "skills given as text, not a list"
+
+new_repo
+write_plugins '[{ "name": "example-skills", "source": "./", "skills": ["skills/good-skill/"] }]'
+must_pass "skills path with no ./ and a trailing slash"
 
 new_repo
 rm "$repo/.claude-plugin/marketplace.json"
@@ -410,6 +484,33 @@ new_repo
 write_skill good-skill <<'MD'
 ---
 name: good-skill
+description: ~
+---
+MD
+must_fail "description: ~" 'skills/good-skill/SKILL.md: description is empty'
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: null
+---
+MD
+must_fail "description: null" 'skills/good-skill/SKILL.md: description is empty'
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: "null"
+---
+MD
+must_pass 'description: "null", which is the word as text'
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
 ---
 MD
 must_fail "description missing" 'skills/good-skill/SKILL.md has no description in its frontmatter'
@@ -460,6 +561,14 @@ must_fail "name with an underscore" 'name "good_skill" breaks the Agent Skills n
 new_repo
 rename_skill café
 must_fail "name with a letter outside a-z" 'name "café" breaks the Agent Skills naming rules: it may only contain lowercase letters (a-z), digits and hyphens'
+with_locale=C
+must_fail "name with a letter outside a-z, run with LC_ALL=C" 'name "café" breaks the Agent Skills naming rules: it may only contain lowercase letters (a-z), digits and hyphens'
+with_locale=""
+cases=$((cases + 1))
+
+new_repo
+rename_skill "my skill"
+must_fail "folder and name with a space, read as one skill" 'skills/my skill/SKILL.md: name "my skill" breaks the Agent Skills naming rules: it may only contain lowercase letters (a-z), digits and hyphens'
 
 new_repo
 rename_skill -good-skill
@@ -511,6 +620,10 @@ description: $(long_description 1024 | sed 's/x/é/g')
 ---
 MD
 must_pass "description of 1024 accented characters (2048 bytes)"
+with_locale=C
+must_pass "description of 1024 accented characters, run with LC_ALL=C"
+with_locale=""
+cases=$((cases + 1))
 
 new_repo
 write_skill good-skill <<MD
@@ -520,6 +633,10 @@ description: $(long_description 1025 | sed 's/x/é/g')
 ---
 MD
 must_fail "description of 1025 accented characters" 'skills/good-skill/SKILL.md: description is 1025 characters and the limit is 1024'
+with_locale=C
+must_fail "description of 1025 accented characters, run with LC_ALL=C" 'skills/good-skill/SKILL.md: description is 1025 characters and the limit is 1024'
+with_locale=""
+cases=$((cases + 1))
 
 new_repo
 write_skill good-skill <<MD
@@ -530,6 +647,16 @@ description: >
 ---
 MD
 must_pass "description of 1024 characters written with >, which adds a line break"
+
+new_repo
+write_skill good-skill <<MD
+---
+name: good-skill
+description: |
+  $(long_description 1024)
+---
+MD
+must_pass "description of 1024 characters written with |, which adds a line break"
 
 new_repo
 write_skill good-skill <<'MD'
@@ -560,6 +687,18 @@ must_fail "frontmatter with nothing in it" 'skills/good-skill/SKILL.md: the fron
 new_repo
 printf '\357\273\277---\nname: good-skill\ndescription: Does a thing.\n---\n' > "$repo/skills/good-skill/SKILL.md"
 must_fail "SKILL.md that starts with a byte-order mark" 'skills/good-skill/SKILL.md starts with a byte-order mark'
+# The same again in a UTF-8 locale, where some tools count the mark as one
+# character and not three bytes. Skipped if this machine has no such locale.
+with_locale="$(locale -a 2> /dev/null | grep -iE '^(C|en_US)\.utf-?8$' | sed -n 1p)"
+if [ -n "$with_locale" ]; then
+  cases=$((cases + 1))
+  must_fail "SKILL.md that starts with a byte-order mark, run with LC_ALL=$with_locale" 'skills/good-skill/SKILL.md starts with a byte-order mark'
+fi
+with_locale=""
+
+new_repo
+printf -- '---\nname: good-skill\ndescription: Does a thing.\n---\n\nCaf\351.\n' > "$repo/skills/good-skill/SKILL.md"
+must_fail "SKILL.md with a byte that is not UTF-8" 'skills/good-skill/SKILL.md is not UTF-8 text'
 
 new_repo
 write_skill good-skill <<'MD'
@@ -705,19 +844,93 @@ allowed-tools: Read Grep
 ---
 MD
 must_pass "all six uploadable keys, with nested metadata"
-out="$("$validate" "$repo" 2>&1)"
+must_print_no_note "all six uploadable keys give no note"
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: Does a thing. Use when the thing needs doing.
+---
+
+# Good skill
+
+---
+
+argument-hint: x
+
+---
+
+More.
+MD
+must_pass "--- rules further down the file, with a key-like line between them"
+must_print_no_note "--- rules further down the file give no note"
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: |
+  Does a thing.
+  argument-hint: x
+---
+MD
+must_pass "a key-like line inside a | block"
+must_print_no_note "a key-like line inside a | block gives no note"
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: Does a thing. Use when the thing needs doing.
+"my key": x
+"*": x
+metadata:x: y
+---
+MD
+must_pass "keys with a space, a star and a colon in them are each named whole" 'because the Claude apps reject these frontmatter keys: my key, *, metadata:x'
+
+# scripts/package.sh makes a zip for a skill with any of these four keys,
+# because it cuts a key at its first colon and strips a quote mark from either
+# end. Each is outside the six, so validate.sh must give the note.
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: Does a thing. Use when the thing needs doing.
+metadata:x: y
+license:mit: yes
+metadata": y
+"license: x": y
+---
+MD
+must_pass "keys that only look like one of the six" 'because the Claude apps reject these frontmatter keys: metadata:x, license:mit, metadata", license: x'
+
+# Text from a SKILL.md must never be run. If it were, a file called marker
+# would appear in the folder validate.sh is run from.
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: "$(touch marker) `touch marker`"
+"$(touch marker) `touch marker`": x
+---
+MD
+cd "$repo" || exit 1
+must_pass "shell commands in a description and a key are treated as text" 'because the Claude apps reject these frontmatter keys: $(touch marker) `touch marker`'
+cd "$OLDPWD" || exit 1
 cases=$((cases + 1))
-if grep -q '^note: ' <<<"$out"; then
-  report FAILED "passes: all six uploadable keys give no note" "$out"
+if [ -n "$(find "$work" -name marker)" ]; then
+  report FAILED "passes: no command from a SKILL.md was run" "found: $(find "$work" -name marker)"
 else
-  report ok "passes: all six uploadable keys give no note" "(no note printed)"
+  report ok "passes: no command from a SKILL.md was run" "(no marker file was made)"
 fi
 
 # --- yq or jq missing, or the wrong yq ----------------------------------------
 
 # Run validate.sh with a PATH that holds only the tools named, as links. It
 # must stop with exit 2 and say plainly what is wrong and how to get the tools,
-# before checking anything. "other-yq" stands for the other tool called yq, the
+# before checking anything, in lines that start "error: " or carry one on. "other-yq" stands for the other tool called yq, the
 # Python one, which answers --version the way that one does.
 tool_case() { # tool_case <case> <text> <tool>...
   local name="$1" text="$2" bin out status tool
@@ -736,7 +949,7 @@ tool_case() { # tool_case <case> <text> <tool>...
   out="$(PATH="$bin" "$BASH" "$validate" "$repo" 2>&1)"
   status=$?
   if [ "$status" -eq 2 ] && grep -qF -- "$text" <<<"$out" && grep -qF 'brew install yq' <<<"$out" \
-    && ! grep -q 'command not found' <<<"$out"; then
+    && ! grep -qvE '^(error: |       )' <<<"$out"; then
     report ok "stops: $name" "$out"
   else
     report FAILED "stops: $name" "expected exit 2, a brew install line and: $text

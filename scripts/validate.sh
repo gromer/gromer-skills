@@ -84,6 +84,14 @@ err() {
   errors=$((errors + 1))
 }
 
+# True for a file that is UTF-8 text. jq puts a stand-in character where it
+# meets a byte that is not UTF-8, without saying so, which would let a file
+# saved in another encoding through. Where there is no iconv to ask, the file
+# is taken to be fine.
+is_utf8() {
+  ! command -v iconv > /dev/null 2>&1 || iconv -f UTF-8 -t UTF-8 < "$1" > /dev/null 2>&1
+}
+
 # Print the lines a jq program gave: "error: ..." lines count as errors, and
 # "note: ..." lines are passed on.
 report() {
@@ -186,6 +194,8 @@ listed_known=0
 
 if [ ! -f "$root/$manifest" ]; then
   err "$manifest was not found"
+elif ! is_utf8 "$root/$manifest"; then
+  err "$manifest is not UTF-8 text"
 elif ! jq -s . "$root/$manifest" > /dev/null 2> "$tmp/jq-error"; then
   err "$manifest is not valid JSON ($(sed -e 's/^jq: error (at [^)]*): //' -e 's/^jq: //' -e 1q "$tmp/jq-error" | cut -c 1-120))"
 elif ! jq -r -s --arg manifest "$manifest" "$(manifest_checks)" "$root/$manifest" > "$tmp/manifest-problems" 2> "$tmp/jq-error"; then
@@ -276,6 +286,11 @@ check_skill() {
   local folder="$1"
   local file="skills/$folder/SKILL.md"
   local status=0 json problem repeated
+
+  if ! is_utf8 "$root/$file"; then
+    err "$file is not UTF-8 text"
+    return
+  fi
 
   # The frontmatter is the block between the first two '---' lines. The opening
   # line is kept, so that yq's line numbers are the file's line numbers.
