@@ -18,8 +18,17 @@ jobs:
       - name: Package each skill
         run: ./scripts/package.sh
 
+      # package.sh makes no zip for a skill the Claude apps would reject, so
+      # dist/ can be empty. That is not a failure.
       - name: Attach zips to the release
-        run: gh release upload "$TAG" dist/*.zip --clobber
+        run: |
+          shopt -s nullglob
+          zips=(dist/*.zip)
+          if [ "${#zips[@]}" -eq 0 ]; then
+            echo "No zips to attach: no skill in this release can be uploaded to the Claude apps."
+            exit 0
+          fi
+          gh release upload "$TAG" "${zips[@]}" --clobber
         env:
           GH_TOKEN: ${{ github.token }}
           TAG: ${{ github.event.release.tag_name }}
