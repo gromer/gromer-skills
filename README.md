@@ -2,8 +2,9 @@
 
 Agent skills I write, in one place, installable in Claude, ChatGPT/Codex and
 GitHub Copilot. Each skill is a folder with a `SKILL.md`, following the open
-[Agent Skills](https://agentskills.io) format, so the same copy works in every
-tool.
+[Agent Skills](https://agentskills.io) format, which all of those tools read.
+The format is shared, but a skill may still need a specific tool to do its
+work. The "Works in" column below says where each skill works.
 
 ## Skills
 
@@ -18,32 +19,38 @@ agent's permissions.
 
 ### With the GitHub CLI (Copilot, Claude Code, Codex)
 
-Needs [GitHub CLI](https://cli.github.com) 2.90 or later.
+Needs [GitHub CLI](https://cli.github.com) 2.99 or later. `gh skill` arrived
+in 2.90, but before 2.99 it installed Codex skills for `--scope user` into
+`~/.codex/skills` instead of `~/.agents/skills`.
+
+In the commands below, replace `<skill>` with a name from the "Skill" column of
+the [skills table](#skills). Check the "Works in" column first: a skill that
+needs one tool won't do its work in another.
 
 ```bash
-gh skill preview gromer/gromer-skills issue-flow
+gh skill preview gromer/gromer-skills <skill>
 ```
 
 GitHub Copilot:
 
 ```bash
-gh skill install gromer/gromer-skills issue-flow --agent github-copilot --scope user
+gh skill install gromer/gromer-skills <skill> --agent github-copilot --scope user
 ```
 
 Claude Code:
 
 ```bash
-gh skill install gromer/gromer-skills issue-flow --agent claude-code --scope user
+gh skill install gromer/gromer-skills <skill> --agent claude-code --scope user
 ```
 
 Codex and the ChatGPT desktop app:
 
 ```bash
-gh skill install gromer/gromer-skills issue-flow --agent codex --scope user
+gh skill install gromer/gromer-skills <skill> --agent codex --scope user
 ```
 
 `--scope user` installs for you in every project. Leave it off to install into
-the current repository instead. Replace the skill name with `--all` to install
+the current repository instead. Replace `<skill>` with `--all` to install
 everything.
 
 Update later with:
@@ -62,7 +69,19 @@ In Claude Code:
 ```
 
 The skills then appear under the plugin's name, for example
-`/gromer-skills:issue-flow`. Update with `/plugin marketplace update gromer-skills`.
+`/gromer-skills:issue-flow`.
+
+Claude Code doesn't update this plugin on its own, because auto-update is off
+for marketplaces like this one unless you turn it on. To update the installed
+plugin, run this in your shell:
+
+```bash
+claude plugin update gromer-skills@gromer-skills
+```
+
+The new version loads in your next session, or after `/reload-plugins` in a
+running one. You can also run `/plugin` in Claude Code, open the plugin on the
+**Installed** tab and choose **Update now**.
 
 ### In the Claude apps (claude.ai and desktop)
 
@@ -95,15 +114,31 @@ or [as a Claude Code plugin](#as-a-claude-code-plugin):
 
 ### As a ChatGPT / Codex plugin
 
-ChatGPT on the web and mobile only load skills that come inside a plugin. Codex
-can add this repository as a plugin marketplace:
+This route covers Codex CLI and the ChatGPT desktop app. Add this repository
+as a plugin marketplace:
 
 ```bash
 codex plugin marketplace add gromer/gromer-skills
 ```
 
-Then install `gromer-skills` from the Plugins Directory in the ChatGPT desktop
-app or Codex CLI.
+Then install the plugin from it:
+
+```bash
+codex plugin add gromer-skills@gromer-skills
+```
+
+Start a new session afterwards so the skills load. Instead of the second
+command, you can install `gromer-skills` from the plugin browser: `/plugins` in
+Codex CLI, or the Plugins Directory in the ChatGPT desktop app. The plugin
+carries every skill in this repository, so check the "Works in" column of the
+[skills table](#skills) for the ones that work in Codex.
+
+ChatGPT on the web and mobile can't use a marketplace added this way. There, a
+plugin has to be
+[published to your workspace](https://developers.openai.com/plugins/build/plugins#publish-a-local-plugin-to-your-workspace)
+by a workspace admin, or
+[submitted to the public plugin directory](https://developers.openai.com/plugins/deploy/submission).
+Adding this repository as a marketplace does neither.
 
 ## Adding a skill
 
@@ -127,12 +162,17 @@ app or Codex CLI.
    gh skill publish --dry-run
    ```
 
-5. Commit and push. To cut a release that installs pin to and that carries a
-   zip for each skill that can be uploaded:
+5. Commit and push, then cut a release:
 
    ```bash
    gh skill publish --tag vX.Y.Z
    ```
+
+   Every change to a skill needs a release to reach `gh skill` users, not only
+   a new skill. `gh skill install` and `gh skill update` use the latest release
+   tag, while the plugin routes follow `main`. Until the release, plugin users
+   can get the change and `gh skill` users can't. The release also carries a
+   zip for each skill that can be uploaded.
 
 ## License
 
