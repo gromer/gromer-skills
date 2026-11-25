@@ -72,7 +72,10 @@ uploadable_keys='["name", "description", "license", "compatibility", "metadata",
 max_name=64
 max_description=1024
 
-tmp="$(mktemp -d "${TMPDIR:-/tmp}/validate.XXXXXX")"
+tmp="$(mktemp -d "${TMPDIR:-/tmp}/validate.XXXXXX" 2> /dev/null)" || {
+  echo "error: validate.sh could not make a temporary folder in ${TMPDIR:-/tmp}" >&2
+  exit 2
+}
 trap 'rm -rf "$tmp"' EXIT
 
 errors=0
@@ -185,8 +188,10 @@ if [ ! -f "$root/$manifest" ]; then
   err "$manifest was not found"
 elif ! jq -s . "$root/$manifest" > /dev/null 2> "$tmp/jq-error"; then
   err "$manifest is not valid JSON ($(sed -e 's/^jq: error (at [^)]*): //' -e 's/^jq: //' -e 1q "$tmp/jq-error" | cut -c 1-120))"
+elif ! jq -r -s --arg manifest "$manifest" "$(manifest_checks)" "$root/$manifest" > "$tmp/manifest-problems" 2> "$tmp/jq-error"; then
+  # Not expected: the checks themselves stopped. Say so in one line.
+  err "$manifest could not be checked ($(sed -e 1q "$tmp/jq-error" | cut -c 1-160))"
 else
-  jq -r -s --arg manifest "$manifest" "$(manifest_checks)" "$root/$manifest" > "$tmp/manifest-problems"
   report < "$tmp/manifest-problems"
   if jq -e -s 'length == 1 and (.[0] | type) == "object"' "$root/$manifest" > /dev/null \
     && jq -e -s '(.[0].plugins | type) == "array"' "$root/$manifest" > /dev/null; then
@@ -276,6 +281,7 @@ check_skill() {
   # line is kept, so that yq's line numbers are the file's line numbers.
   awk '
     { line = $0; sub(/[ \t\r]+$/, "", line) }
+    NR == 1 && substr(line, 1, 3) == "\357\273\277" { code = 5; exit }
     NR == 1 { if (line != "---") { code = 3; exit }; print "---"; next }
     line == "---" { closed = 1; exit }
     { sub(/\r$/, ""); print }
@@ -289,6 +295,10 @@ check_skill() {
       ;;
     4)
       err "$file: the frontmatter is never closed. It opens with --- on line 1, but no later line is ---"
+      return
+      ;;
+    5)
+      err "$file starts with a byte-order mark, an invisible character some editors add, so its frontmatter is not found. Save the file without it"
       return
       ;;
     *)
@@ -308,11 +318,15 @@ check_skill() {
   fi
   [ -n "$json" ] || json=null
 
-  printf '%s\n' "$json" | jq -r \
+  if ! printf '%s\n' "$json" | jq -r \
     --arg file "$file" --arg folder "$folder" \
     --argjson uploadable "$uploadable_keys" \
     --argjson max_name "$max_name" --argjson max_description "$max_description" \
-    "$(skill_checks)" > "$tmp/skill-problems"
+    "$(skill_checks)" > "$tmp/skill-problems" 2> "$tmp/jq-error"; then
+    # Not expected: the checks themselves stopped. Say so in one line.
+    err "$file could not be checked ($(sed -e 1q "$tmp/jq-error" | cut -c 1-160))"
+    return
+  fi
   report < "$tmp/skill-problems"
 
   # JSON keeps only the last of two keys with the same name, so ask yq.
