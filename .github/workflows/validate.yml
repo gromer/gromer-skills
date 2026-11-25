@@ -17,6 +17,9 @@ jobs:
       - name: Check skills and marketplace manifest
         run: ./scripts/validate.sh
 
+      - name: Check that validation catches broken examples
+        run: ./scripts/test-validate.sh
+
       - name: Check against the Agent Skills spec
         run: gh skill publish --dry-run
         env:
