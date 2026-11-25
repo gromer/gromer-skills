@@ -28,6 +28,12 @@ fi
 
 root="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 
+# A folder whose name starts with a dash would be taken for an option by the
+# tools below.
+case "$root" in
+  -*) root="./$root" ;;
+esac
+
 if [ ! -d "$root" ]; then
   echo "error: $root is not a folder" >&2
   exit 2
@@ -89,7 +95,23 @@ err() {
 # saved in another encoding through. Where there is no iconv to ask, the file
 # is taken to be fine.
 is_utf8() {
-  ! command -v iconv > /dev/null 2>&1 || iconv -f UTF-8 -t UTF-8 < "$1" > /dev/null 2>&1
+  ! command -v iconv > /dev/null 2>&1 || iconv -f UTF-8 -t UTF-8 "$1" > /dev/null 2>&1
+}
+
+# True for a file that is there and can be opened. A link to a file that is
+# not there, a file with no read permission and a folder are all not.
+is_readable() {
+  [ -f "$1" ] && [ -r "$1" ]
+}
+
+# True for a file that is strictly JSON. jq reads more than JSON: it takes 007,
+# .5, +1, 1., NaN and Infinity as numbers, which Claude Code does not. yq reads
+# JSON strictly. It also refuses a byte-order mark at the start of the file,
+# which Claude Code accepts, so that is taken off first. What yq said is left
+# in the file yq-error.
+is_strict_json() {
+  awk 'NR == 1 && substr($0, 1, 3) == "\357\273\277" { $0 = substr($0, 4) } { print }' "$1" > "$tmp/strict.json"
+  yq eval --input-format=json --output-format=json '.' "$tmp/strict.json" > /dev/null 2> "$tmp/yq-error"
 }
 
 # Print the lines a jq program gave: "error: ..." lines count as errors, and
@@ -192,12 +214,16 @@ JQ
 listed_known=0
 : > "$tmp/listed"
 
-if [ ! -f "$root/$manifest" ]; then
+if [ ! -e "$root/$manifest" ] && [ ! -L "$root/$manifest" ]; then
   err "$manifest was not found"
+elif ! is_readable "$root/$manifest"; then
+  err "$manifest could not be read"
 elif ! is_utf8 "$root/$manifest"; then
   err "$manifest is not UTF-8 text"
 elif ! jq -s . "$root/$manifest" > /dev/null 2> "$tmp/jq-error"; then
   err "$manifest is not valid JSON ($(sed -e 's/^jq: error (at [^)]*): //' -e 's/^jq: //' -e 1q "$tmp/jq-error" | cut -c 1-120))"
+elif ! is_strict_json "$root/$manifest"; then
+  err "$manifest is not valid JSON ($(sed -e 's/^Error: //' -e "s/^bad file '[^']*': //" -e 1q "$tmp/yq-error" | cut -c 1-120))"
 elif ! jq -r -s --arg manifest "$manifest" "$(manifest_checks)" "$root/$manifest" > "$tmp/manifest-problems" 2> "$tmp/jq-error"; then
   # Not expected: the checks themselves stopped. Say so in one line.
   err "$manifest could not be checked ($(sed -e 1q "$tmp/jq-error" | cut -c 1-160))"
@@ -245,11 +271,25 @@ def name_problems:
     (if startswith("-") or endswith("-") then "it must not start or end with a hyphen" else empty end),
     (if index("--") != null then "it must not have two hyphens in a row" else empty end) ];
 
+# YAML reads a value written without quotes as a number, as true or false, or
+# as no value, when it looks like one: 007 is the number 7, and null is no
+# value. This says which of those a value was read as; text gives nothing.
+def read_as:
+  if type == "number" then "a number"
+  elif type == "boolean" then "true or false"
+  elif type == "null" then "no value"
+  else empty end;
+
 def name_lines:
   if has("name") | not then "error: \($file) has no name in its frontmatter"
   else
     (.name | as_text) as $name
     | if $name == null then "error: \($file): name must be text, not a list or nested keys"
+      elif (.name | type) != "string" and $name != $folder and ($name != "" or $folder == "null") then
+        # The name as YAML read it is not the name as written, so say that and
+        # not what YAML made of it. A number that still reads the same, such as
+        # 2048, goes on to the checks below.
+        "error: \($file): name is read by YAML as \(.name | read_as), not as text, so it does not match its folder name \"\($folder)\". If the name is right, put it in quotes: name: \"\($folder)\""
       elif ($name | blank) then "error: \($file): name is empty"
       else
         (if $name != $folder then "error: \($file): name \"\($name)\" does not match its folder name \"\($folder)\"" else empty end),
@@ -287,6 +327,10 @@ check_skill() {
   local file="skills/$folder/SKILL.md"
   local status=0 json problem repeated
 
+  if ! is_readable "$root/$file"; then
+    err "$file could not be read. It may be a link to a file that is not there, a folder, or a file with no read permission"
+    return
+  fi
   if ! is_utf8 "$root/$file"; then
     err "$file is not UTF-8 text"
     return
@@ -324,9 +368,10 @@ check_skill() {
 
   if ! json="$(yq eval --output-format=json '.' "$tmp/frontmatter" 2> "$tmp/yq-error")"; then
     # Keep the first line of what yq said, without its own prefixes. Depending
-    # on its version, yq gives the place as "line 3:" or as "L3.C28:".
+    # on its version, yq gives the place as "line 3:", or as "L3.C28:" or
+    # "L3.C14-L4.C1:" after a clause in brackets.
     problem="$(sed -E -e 's/^Error: //' -e "s/^bad file '[^']*': //" -e 's/^yaml: //' \
-      -e 's/^go-yaml load error in [a-z]+ at //' -e 's/^L([0-9]+)\.C[0-9]+: /line \1: /' \
+      -e 's/^go-yaml load error in [a-z]+ (\([^)]*\) )?at L([0-9]+)\.C[0-9]+(-(L[0-9]+\.)?C[0-9]+)?: /line \2: /' \
       -e 1q "$tmp/yq-error" | cut -c 1-160)"
     err "$file: the frontmatter is not valid YAML (${problem:-yq could not read it})"
     return
@@ -361,7 +406,10 @@ for dir in "$root"/skills/*/; do
   folder="$(basename "$dir")"
   # Look the file up by its exact name: macOS would otherwise accept skill.md,
   # which Linux does not.
-  if [ -n "$(find "$dir" -maxdepth 1 -name SKILL.md)" ]; then
+  if [ ! -r "$dir" ] || [ ! -x "$dir" ]; then
+    echo "skills/$folder" >> "$tmp/no-skill-md"
+    err "skills/$folder could not be read: it has no read permission"
+  elif [ -n "$(find "$dir" -maxdepth 1 -name SKILL.md 2> /dev/null)" ]; then
     echo "skills/$folder" >> "$tmp/on-disk"
     check_skill "$folder"
   else

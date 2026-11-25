@@ -387,7 +387,37 @@ write_manifest <<'JSON'
   ]
 }
 JSON
-must_fail "manifest is not valid JSON" '.claude-plugin/marketplace.json is not valid JSON'
+must_fail "manifest is not valid JSON (a comma after the last plugin), with the place" '.claude-plugin/marketplace.json is not valid JSON (parse error: Expected another array element at line 6, column 3)'
+
+# jq takes these as numbers, and JSON does not. Claude Code rejects them.
+for number in 007 .5 +1 1. NaN Infinity; do
+  new_repo
+  write_manifest <<JSON
+{
+  "name": "example-skills",
+  "owner": { "name": "Example Owner" },
+  "metadata": { "description": "Example", "n": $number },
+  "plugins": [$good_plugin]
+}
+JSON
+  must_fail "manifest with $number, which is not a JSON number" '.claude-plugin/marketplace.json is not valid JSON'
+done
+
+new_repo
+write_manifest <<JSON
+{
+  "name": "example-skills",
+  "owner": { "name": "Example Owner" },
+  "metadata": { "description": "Example", "n": [7, -0, 1e5, 1E+2, 0.5] },
+  "plugins": [$good_plugin]
+}
+JSON
+must_pass "manifest with numbers JSON does allow"
+
+new_repo
+rm "$repo/.claude-plugin/marketplace.json"
+ln -s nowhere.json "$repo/.claude-plugin/marketplace.json"
+must_fail "manifest that is a link to a file that isn't there" '.claude-plugin/marketplace.json could not be read'
 
 new_repo
 { printf '\357\273\277'; cat "$repo/.claude-plugin/marketplace.json"; } > "$work/with-mark.json"
@@ -594,6 +624,33 @@ new_repo
 rename_skill 2048
 must_pass "name that is all digits"
 
+# Names made of digits and lowercase letters that YAML reads as a number or as
+# no value when they have no quotes. The message must say so and give the fix,
+# not show a name the person never wrote.
+for name in 007 1e3 0x10 12345678901234567890123; do
+  new_repo
+  rename_skill "$name"
+  must_fail "name $name without quotes, which YAML reads as a number" "skills/$name/SKILL.md: name is read by YAML as a number, not as text, so it does not match its folder name \"$name\". If the name is right, put it in quotes: name: \"$name\""
+done
+
+new_repo
+rename_skill null
+must_fail "name null without quotes, which YAML reads as no value" 'skills/null/SKILL.md: name is read by YAML as no value, not as text, so it does not match its folder name "null". If the name is right, put it in quotes: name: "null"'
+
+new_repo
+rename_skill 007
+write_skill 007 <<'MD'
+---
+name: "007"
+description: Does a thing. Use when the thing needs doing.
+---
+MD
+must_pass 'name "007" in quotes'
+
+new_repo
+rename_skill true
+must_pass "name true, which reads the same as text"
+
 new_repo
 write_skill good-skill <<MD
 ---
@@ -697,6 +754,45 @@ fi
 with_locale=""
 
 new_repo
+rm "$repo/skills/good-skill/SKILL.md"
+ln -s nowhere.md "$repo/skills/good-skill/SKILL.md"
+must_fail "SKILL.md that is a link to a file that isn't there" 'skills/good-skill/SKILL.md could not be read'
+
+new_repo
+rm "$repo/skills/good-skill/SKILL.md"
+mkdir "$repo/skills/good-skill/SKILL.md"
+must_fail "SKILL.md that is a folder" 'skills/good-skill/SKILL.md could not be read'
+
+# Taking away read permission stops nobody who runs as root, so these three are
+# skipped there. Permission is given back afterwards so the folder can be
+# cleaned up.
+if [ "$(id -u)" -ne 0 ]; then
+  new_repo
+  chmod 000 "$repo/skills/good-skill/SKILL.md"
+  must_fail "SKILL.md with no read permission" 'skills/good-skill/SKILL.md could not be read'
+  chmod 644 "$repo/skills/good-skill/SKILL.md"
+
+  new_repo
+  chmod 000 "$repo/skills/good-skill"
+  must_fail "skill folder with no read permission" 'skills/good-skill could not be read'
+  chmod 755 "$repo/skills/good-skill"
+
+  new_repo
+  chmod 000 "$repo/.claude-plugin/marketplace.json"
+  must_fail "manifest with no read permission" '.claude-plugin/marketplace.json could not be read'
+  chmod 644 "$repo/.claude-plugin/marketplace.json"
+fi
+
+# A repository in a folder whose name starts with a dash, given by that name.
+new_repo
+mkdir "$work/dash-$cases"
+mv "$repo" "$work/dash-$cases/-r"
+cd "$work/dash-$cases" || exit 1
+repo="-r"
+must_pass "repository folder called -r" "ok: 1 skill(s), manifest in sync"
+cd "$OLDPWD" || exit 1
+
+new_repo
 printf -- '---\nname: good-skill\ndescription: Does a thing.\n---\n\nCaf\351.\n' > "$repo/skills/good-skill/SKILL.md"
 must_fail "SKILL.md with a byte that is not UTF-8" 'skills/good-skill/SKILL.md is not UTF-8 text'
 
@@ -707,7 +803,7 @@ name: good-skill
 description: Does a thing. Use when: the thing needs doing.
 ---
 MD
-must_fail "frontmatter that is not valid YAML (a colon inside an unquoted value)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML ('
+must_fail "frontmatter that is not valid YAML (a colon inside an unquoted value)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML (line 3: mapping values are not allowed in this context)'
 
 new_repo
 write_skill good-skill <<'MD'
@@ -718,7 +814,32 @@ description: Does a thing.
  version: "1.0"
 ---
 MD
-must_fail "frontmatter that is not valid YAML (bad indentation)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML ('
+must_fail "frontmatter that is not valid YAML (bad indentation)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML (line 4: '
+
+# The next three are worded by yq with a clause in brackets and a range of
+# places ("L3.C14-L4.C1"), which validate.sh turns into a line number.
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: "Does a thing.
+---
+MD
+must_fail "frontmatter that is not valid YAML (a missing closing quote)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML (line 3: '
+
+new_repo
+printf -- '---\nname: good-skill\ndescription: Does a thing.\n\tmetadata: x\n---\n' > "$repo/skills/good-skill/SKILL.md"
+must_fail "frontmatter that is not valid YAML (a tab used to indent)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML (line 3: '
+
+new_repo
+write_skill good-skill <<'MD'
+---
+name: good-skill
+description: Does a thing.
+allowed-tools: [Read, Grep
+---
+MD
+must_fail "frontmatter that is not valid YAML (a missing ])" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML (line 4: '
 
 new_repo
 write_skill good-skill <<'MD'
