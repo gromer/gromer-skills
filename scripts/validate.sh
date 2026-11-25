@@ -4,10 +4,17 @@
 # the folders list the same skills.
 #
 # Usage: scripts/validate.sh [repository]
+#        scripts/validate.sh --skill <folder> [repository]
 #
 # With no argument it checks the repository this script is in. Give a folder to
 # check that one instead, which is how scripts/test-validate.sh runs it against
 # broken examples.
+#
+# With --skill it checks only skills/<folder>, and not the manifest: it prints
+# that skill's "error: ..." lines and its "note: ..." line, if it has any, and
+# exits 1 if there was an error. scripts/package.sh asks this for each skill,
+# so that a skill gets an upload zip exactly when this script finds no error in
+# it and prints no note for it.
 #
 # Needs yq and jq. SKILL.md frontmatter is YAML, so yq reads it and turns it
 # into JSON, and jq does the checking; jq also reads the manifest. The GitHub
@@ -21,8 +28,15 @@
 set -euo pipefail
 export LC_ALL=C
 
-if [ "$#" -gt 1 ]; then
+only_skill=""
+if [ "${1:-}" = "--skill" ] && [ "$#" -ge 2 ] && [ -n "$2" ]; then
+  only_skill="$2"
+  shift 2
+fi
+
+if [ "$#" -gt 1 ] || [ "${1:-}" = "--skill" ]; then
   echo "usage: $0 [repository]" >&2
+  echo "       $0 --skill <folder> [repository]" >&2
   exit 2
 fi
 
@@ -214,7 +228,9 @@ JQ
 listed_known=0
 : > "$tmp/listed"
 
-if [ ! -e "$root/$manifest" ] && [ ! -L "$root/$manifest" ]; then
+if [ -n "$only_skill" ]; then
+  : # One skill was asked for, so the manifest is not looked at.
+elif [ ! -e "$root/$manifest" ] && [ ! -L "$root/$manifest" ]; then
   err "$manifest was not found"
 elif ! is_readable "$root/$manifest"; then
   err "$manifest could not be read"
@@ -401,9 +417,10 @@ check_skill() {
 : > "$tmp/on-disk"
 : > "$tmp/no-skill-md"
 
-for dir in "$root"/skills/*/; do
-  [ -d "$dir" ] || continue
-  folder="$(basename "$dir")"
+# Check one folder under skills/.
+check_folder() {
+  local folder="$1"
+  local dir="$root/skills/$folder/"
   # Look the file up by its exact name: macOS would otherwise accept skill.md,
   # which Linux does not.
   if [ ! -r "$dir" ] || [ ! -x "$dir" ]; then
@@ -416,6 +433,27 @@ for dir in "$root"/skills/*/; do
     echo "skills/$folder" >> "$tmp/no-skill-md"
     err "skills/$folder has no SKILL.md"
   fi
+}
+
+if [ -n "$only_skill" ]; then
+  case "$only_skill" in
+    */* | . | ..)
+      echo "error: --skill takes the name of a folder under skills/, not a path: $only_skill" >&2
+      exit 2
+      ;;
+  esac
+  if [ ! -d "$root/skills/$only_skill" ]; then
+    echo "error: skills/$only_skill is not a folder in $root" >&2
+    exit 2
+  fi
+  check_folder "$only_skill"
+  [ "$errors" -eq 0 ] || exit 1
+  exit 0
+fi
+
+for dir in "$root"/skills/*/; do
+  [ -d "$dir" ] || continue
+  check_folder "$(basename "$dir")"
 done
 
 if [ ! -s "$tmp/on-disk" ] && [ ! -s "$tmp/no-skill-md" ]; then

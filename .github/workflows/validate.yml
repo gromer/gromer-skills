@@ -27,3 +27,6 @@ jobs:
 
       - name: Check the skills package
         run: ./scripts/package.sh
+
+      - name: Check that packaging makes the right zips
+        run: ./scripts/test-package.sh

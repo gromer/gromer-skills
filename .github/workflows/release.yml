@@ -15,6 +15,16 @@ jobs:
         with:
           ref: ${{ github.event.release.tag_name }}
 
+      # validate.sh and package.sh need yq and jq, which the runner already has.
+      - name: Show the versions of yq and jq
+        run: |
+          yq --version
+          jq --version
+
+      # A release cut from a broken tree gets no zips: the run stops here.
+      - name: Check skills and marketplace manifest
+        run: ./scripts/validate.sh
+
       - name: Package each skill
         run: ./scripts/package.sh
 
