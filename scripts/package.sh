@@ -13,7 +13,10 @@
 # a file that was not committed, and a link is kept as a link and never
 # followed. Packaging the same commit twice gives the same bytes. A skill with
 # changes that are not committed is still packaged from the last commit, with
-# a line saying so.
+# a line saying so. A skill whose SKILL.md is itself a link gets no zip.
+#
+# dist/ is replaced only at the end, so a run that stops part-way leaves it as
+# it was.
 #
 # It has to be run in a git checkout. From a downloaded source archive, which
 # has no commits, it stops and says so.
@@ -88,8 +91,17 @@ tmp="$(mktemp -d "${TMPDIR:-/tmp}/package.XXXXXX" 2> /dev/null)" || {
 }
 trap 'rm -rf "$tmp"' EXIT
 
-rm -rf "$dist"
-mkdir -p "$dist"
+# The zips are made in the temporary folder, and what this script has to say
+# is kept in a file there. dist/ is replaced, and the lines printed, only once
+# every skill has been dealt with. So a run that stops part-way, or is
+# interrupted, leaves dist/ as it was.
+mkdir "$tmp/dist"
+: > "$tmp/lines"
+say() { echo "$*" >> "$tmp/lines"; }
+
+# git's own folder for this checkout, so that git can be run from the temporary
+# folder further down.
+git_dir="$(git -C "$root" rev-parse --absolute-git-dir)"
 
 # The skill folders in the commit, one to a line. (A folder name with a line
 # break in it is not supported, here or by validate.sh's naming rules.)
@@ -138,8 +150,10 @@ found=0
 while IFS= read -r folder; do
   name="${folder#skills/}"
 
-  if [ -n "$(git -C "$root" status --porcelain -- ":(literal)skills/$name" 2> /dev/null)" ]; then
-    echo "note: skills/$name has changes that are not committed. They are left out: what is packaged is the last commit."
+  # Untracked files are asked for outright, so that a git setting that hides
+  # them (status.showUntrackedFiles) can't hide them here.
+  if [ -n "$(git -C "$root" status --porcelain --untracked-files=normal -- ":(literal)skills/$name" 2> /dev/null)" ]; then
+    say "note: skills/$name has changes that are not committed. They are left out: what is packaged is the last commit."
   fi
 
   # Look the file up by its exact name, as validate.sh does.
@@ -147,10 +161,20 @@ while IFS= read -r folder; do
     found=$((found + 1))
   fi
 
+  # A SKILL.md that is a link: validate.sh would read the file it points to,
+  # but the zip would hold only the link, so there would be no SKILL.md to read
+  # in it.
+  case "$(git -C "$root" ls-tree "$commit" -- ":(literal)skills/$name/SKILL.md")" in
+    "120000 "*)
+      say "skipped $name: no zip, because its SKILL.md is a link, and a zip can only hold the link, not the file it points to"
+      continue
+      ;;
+  esac
+
   # skip_reason runs in a subshell, so its "exit 2" has to be passed on.
   reason="$(skip_reason "$name")" || exit $?
   if [ -n "$reason" ]; then
-    echo "skipped $name: no zip, because $reason"
+    say "skipped $name: no zip, because $reason"
     continue
   fi
 
@@ -158,17 +182,24 @@ while IFS= read -r folder; do
   # and TZ, the compression level and the line-ending setting are fixed here so
   # that they can't differ from one run or one machine to the next. .DS_Store
   # files are left out even if one was committed.
-  (
-    cd "$root/skills"
-    TZ=UTC git -c core.autocrlf=false archive --format=zip -9 -o "$dist/$name.zip" "$commit" \
-      ":(literal)$name" ':(exclude,glob)**/.DS_Store'
-  )
-  echo "packaged dist/$name.zip"
+  #
+  # git puts the folder it is run from at the top level of the zip. It is run
+  # from the copy of the commit's skills/, not from the working folder's, which
+  # may have been moved or deleted.
+  if ! (
+    cd "$tmp/commit/skills"
+    TZ=UTC GIT_DIR="$git_dir" GIT_WORK_TREE="$tmp/commit" git -c core.autocrlf=false archive --format=zip -9 \
+      -o "$tmp/dist/$name.zip" "$commit" ":(literal)$name" ':(exclude,glob)**/.DS_Store' 2> "$tmp/archive-error"
+  ); then
+    echo "error: package.sh could not make the zip for $name ($(sed -e 1q "$tmp/archive-error" | cut -c 1-160))" >&2
+    exit 2
+  fi
+  say "packaged dist/$name.zip"
 
   git -C "$root" -c core.quotepath=off ls-tree -r "$commit" -- ":(literal)skills/$name" \
     | awk -F '\t' '$1 ~ /^120000 / { print substr($2, 8) }' \
     | while IFS= read -r link; do
-      echo "note: dist/$name.zip holds $link as a link, not as the file it points to."
+      say "note: dist/$name.zip holds $link as a link, not as the file it points to."
     done
 done < "$tmp/folders"
 
@@ -176,10 +207,23 @@ done < "$tmp/folders"
 for dir in "$root"/skills/*/; do
   [ -d "$dir" ] || continue
   name="$(basename "$dir")"
-  if ! grep -qxF "skills/$name" "$tmp/folders"; then
-    echo "skipped $name: no zip, because none of it is committed. Only committed files are packaged."
+  if grep -qxF "skills/$name" "$tmp/folders"; then
+    continue
+  elif [ -L "${dir%/}" ]; then
+    say "skipped $name: no zip, because skills/$name is a link to a folder, not a folder. Only committed files are packaged, and a link is never followed."
+  else
+    say "skipped $name: no zip, because none of it is committed. Only committed files are packaged."
   fi
 done
+
+# Every skill has been dealt with: replace dist/ and say what was done.
+rm -rf "$dist"
+mkdir -p "$dist"
+for zip in "$tmp/dist"/*.zip; do
+  [ -e "$zip" ] || continue
+  mv "$zip" "$dist/"
+done
+cat "$tmp/lines"
 
 if [ "$found" -eq 0 ]; then
   echo "no skills found under skills/ in the last commit" >&2

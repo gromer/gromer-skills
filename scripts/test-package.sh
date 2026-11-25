@@ -128,6 +128,17 @@ check "and package.sh says the skill has changes that are not committed" \
   'grep -qx "note: skills/good-skill has changes that are not committed. They are left out: what is packaged is the last commit." <<<"$out"' \
   "$(grep '^note: ' <<<"$out")"
 
+# A git setting that hides untracked files must not hide the line.
+new_repo
+commit_all
+case_git config status.showUntrackedFiles no
+echo "A draft." > "$repo/skills/good-skill/draft.md"
+pack
+check "it says so even when git is set not to show untracked files" \
+  '[ "$status" -eq 0 ] && [ "$(zips)" = good-skill.zip ] && grep -q "^note: skills/good-skill has changes that are not committed" <<<"$out" \
+    && ! grep -q "draft.md" <<<"$(zip_names "$repo/dist/good-skill.zip")"' \
+  "$(grep '^note: ' <<<"$out")"
+
 new_repo
 commit_all
 pack
@@ -198,6 +209,46 @@ pack
 check "a link with a full path is not followed either" \
   '[ "$status" -eq 0 ] && [ "$(zips)" = good-skill.zip ] && ! grep -q "example-skills" <<<"$(unzip -p "$repo/dist/good-skill.zip")"' \
   "$(grep '^note: ' <<<"$out")"
+
+# A SKILL.md that is itself a link. validate.sh reads the file it points to,
+# but a zip would hold only the link, so there is no zip, wherever it points.
+skill_md_link() { # skill_md_link <case> <where the link points>
+  new_repo
+  mkdir -p "$repo/docs" "$work/elsewhere"
+  cp "$repo/skills/good-skill/SKILL.md" "$repo/skills/good-skill/real.md"
+  cp "$repo/skills/good-skill/SKILL.md" "$repo/docs/real.md"
+  cp "$repo/skills/good-skill/SKILL.md" "$work/elsewhere/real.md"
+  rm "$repo/skills/good-skill/SKILL.md"
+  ln -s "$2" "$repo/skills/good-skill/SKILL.md"
+  commit_all
+  pack
+  check "no zip: SKILL.md is a link to $1" \
+    '[ "$status" -eq 0 ] && [ -z "$(zips)" ] && [ "$("$validate" --skill good-skill "$repo" 2>&1)" = "" ] \
+      && [ "$out" = "skipped good-skill: no zip, because its SKILL.md is a link, and a zip can only hold the link, not the file it points to" ]' \
+    "$out"
+}
+
+skill_md_link "a file in the same skill" real.md
+skill_md_link "a file elsewhere in the repository" ../../docs/real.md
+skill_md_link "a file outside the repository" "$work/elsewhere/real.md"
+
+# A skill folder that is itself a link to a folder.
+new_repo
+mkdir "$repo/elsewhere"
+mv "$repo/skills/good-skill" "$repo/elsewhere/good-skill"
+ln -s ../elsewhere/good-skill "$repo/skills/good-skill"
+write_skill second-skill <<'MD'
+---
+name: second-skill
+description: Does another thing. Use when it needs doing.
+---
+MD
+commit_all
+pack
+check "no zip: the skill folder is a link to a folder" \
+  '[ "$status" -eq 0 ] && [ "$(zips)" = second-skill.zip ] \
+    && grep -qx "skipped good-skill: no zip, because skills/good-skill is a link to a folder, not a folder. Only committed files are packaged, and a link is never followed." <<<"$out"' \
+  "$out"
 
 new_repo
 echo "junk" > "$repo/skills/good-skill/.DS_Store"
@@ -270,6 +321,32 @@ check "and again from a second checkout of the same commit" \
   '[ "$status" -eq 0 ] && cmp -s "$work/first.zip" "$repo/dist/good-skill.zip" \
     && [ "$(case_git rev-parse HEAD)" = "$(git -C "$original" rev-parse HEAD)" ]' \
   "commit $(case_git rev-parse HEAD): $(checksum "$repo/dist/good-skill.zip")"
+
+# What the Release workflow's checkout gives: only the tagged commit, fetched
+# on its own, with no branch checked out.
+cases=$((cases + 1))
+repo="$original"
+case_git tag -a -m "A release" v1
+repo="$work/release-checkout"
+mkdir "$repo"
+case_git init -q . > /dev/null 2>&1
+case_git fetch -q --depth=1 "file://$original" "+refs/tags/v1:refs/tags/v1" > /dev/null 2>&1
+case_git checkout -q --force refs/tags/v1 > /dev/null 2>&1
+pack
+check "and again from a checkout of only a release's tag, as the Release workflow makes" \
+  '[ "$status" -eq 0 ] && cmp -s "$work/first.zip" "$repo/dist/good-skill.zip" \
+    && [ "$(case_git rev-list --count HEAD)" -eq 1 ] && [ -f "$repo/.git/shallow" ] && ! case_git symbolic-ref -q HEAD > /dev/null' \
+  "$(checksum "$repo/dist/good-skill.zip")"
+
+# The zip comes from the commit, so it is the same when skills/ is gone from
+# the working folder.
+cases=$((cases + 1))
+rm -r "$repo/skills"
+pack
+check "and again with skills/ deleted from the working folder" \
+  '[ "$status" -eq 0 ] && cmp -s "$work/first.zip" "$repo/dist/good-skill.zip" && grep -qx "packaged dist/good-skill.zip" <<<"$out" \
+    && grep -q "^note: skills/good-skill has changes that are not committed" <<<"$out"' \
+  "$out"
 
 cases=$((cases + 1))
 check "the zip keeps a script runnable and a text file not" \
@@ -580,9 +657,9 @@ stops "a git checkout with no commits" "has no commits yet."
 # --- yq or jq missing, or the wrong yq ----------------------------------------
 
 # Run package.sh with a PATH that holds only the tools named, as links.
-tool_case() { # tool_case <case> <text> <tool>...
-  local name="$1" text="$2" bin tool
-  shift 2
+tool_case() { # tool_case <case> <text> <more text> <tool>...
+  local name="$1" text="$2" also="$3" bin tool
+  shift 3
   new_repo
   commit_all
   mkdir -p "$repo/dist"
@@ -595,25 +672,28 @@ tool_case() { # tool_case <case> <text> <tool>...
   out="$(PATH="$bin" "$BASH" "$package" "$repo" 2>&1)"
   status=$?
   check "stops: $name" \
-    '[ "$status" -eq 2 ] && grep -qF -- "$text" <<<"$out" && grep -qF "brew install yq jq" <<<"$out" \
+    '[ "$status" -eq 2 ] && grep -qF -- "$text" <<<"$out" && grep -qF -- "$also" <<<"$out" \
       && ! grep -qvE "^(error: |       )" <<<"$out" && [ "$(zips)" = old-skill.zip ]' \
     "$out"
 }
 
-tool_case "no yq on the PATH" 'error: package.sh needs yq, and there is no yq on the PATH.' jq git
-tool_case "no jq on the PATH" 'error: package.sh needs jq, and there is no jq on the PATH.' yq git
+tool_case "no yq on the PATH" 'error: package.sh needs yq, and there is no yq on the PATH.' 'brew install yq jq' jq git
+tool_case "no jq on the PATH" 'error: package.sh needs jq, and there is no jq on the PATH.' 'brew install yq jq' yq git
+tool_case "no git on the PATH" 'error: package.sh needs git, and there is no git on the PATH.' 'needs git' yq jq
 
 # The other tool called yq, the Python one, first on the PATH. validate.sh is
 # the one that notices, and package.sh passes on what it says.
 new_repo
 commit_all
+mkdir "$repo/dist"
+echo "old" > "$repo/dist/old-skill.zip"
 mkdir "$work/other-yq"
 printf '#!/bin/sh\necho "yq 3.4.3"\n' > "$work/other-yq/yq"
 chmod +x "$work/other-yq/yq"
 out="$(PATH="$work/other-yq:$PATH" "$package" "$repo" 2>&1)"
 status=$?
 check "stops: the other yq (the Python one)" \
-  '[ "$status" -eq 2 ] && grep -qF "This one says: yq 3.4.3" <<<"$out" && ! grep -qvE "^(error: |       )" <<<"$out" && [ -z "$(zips)" ]' \
+  '[ "$status" -eq 2 ] && grep -qF "This one says: yq 3.4.3" <<<"$out" && ! grep -qvE "^(error: |       )" <<<"$out" && [ "$(zips)" = old-skill.zip ]' \
   "$out"
 
 new_repo
