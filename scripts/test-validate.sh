@@ -56,13 +56,13 @@ report() { # report <ok|FAILED> <case> <output>
 }
 
 # must_fail <case> <text>: validate.sh must exit 1 and print an error
-# containing the text. A crash with a Ruby stack trace does not count.
+# containing the text. A raw error from bash, jq or yq does not count.
 must_fail() {
   local out status
   out="$("$validate" "$repo" 2>&1)"
   status=$?
   if [ "$status" -eq 1 ] && grep -F -- "$2" <<<"$out" | grep -q '^error: ' \
-    && ! grep -qE 'Traceback|\(SyntaxError\)|^-:[0-9]+:' <<<"$out"; then
+    && ! grep -qE '^jq: |^Error: |line [0-9]+: .*(command not found|syntax error|unbound variable)' <<<"$out"; then
     report ok "fails: $1" "$(grep -F -- "$2" <<<"$out")"
   else
     report FAILED "fails: $1" "expected exit 1 and an error containing: $2
@@ -87,7 +87,9 @@ $out"
 }
 
 echo "Testing $validate"
-echo "with $(command -v ruby): $(ruby -ryaml -e 'print "ruby #{RUBY_VERSION}, YAML library psych #{Psych::VERSION}"' 2>&1)"
+echo "with yq:   $(command -v yq): $(yq --version 2>&1 | head -n 1)"
+echo "     jq:   $(command -v jq): $(jq --version 2>&1 | head -n 1)"
+echo "     bash: $(command -v bash): $(bash --version | head -n 1)"
 echo
 
 # --- The marketplace manifest -----------------------------------------------
@@ -345,7 +347,26 @@ name: Good_Skill
 description: Does a thing. Use when the thing needs doing.
 ---
 MD
-must_fail "name with capitals and an underscore" 'name "Good_Skill" breaks the Agent Skills naming rules: it may only contain lowercase letters, digits and hyphens'
+must_fail "name with capitals and an underscore" 'name "Good_Skill" breaks the Agent Skills naming rules: it may only contain lowercase letters (a-z), digits and hyphens'
+
+new_repo
+rm -r "$repo/skills/good-skill"
+write_manifest <<'JSON'
+{
+  "name": "example-skills",
+  "owner": { "name": "Example Owner" },
+  "plugins": [
+    { "name": "example-skills", "source": "./", "skills": ["./skills/café"] }
+  ]
+}
+JSON
+write_skill café <<'MD'
+---
+name: café
+description: Does a thing. Use when the thing needs doing.
+---
+MD
+must_fail "name with a letter outside a-z" 'name "café" breaks the Agent Skills naming rules: it may only contain lowercase letters (a-z), digits and hyphens'
 
 new_repo
 rm -r "$repo/skills/good-skill"
@@ -405,6 +426,24 @@ MD
 must_pass "description of exactly 1024 characters"
 
 new_repo
+write_skill good-skill <<MD
+---
+name: good-skill
+description: $(long_description 1024 | sed 's/x/é/g')
+---
+MD
+must_pass "description of 1024 accented characters (2048 bytes)"
+
+new_repo
+write_skill good-skill <<MD
+---
+name: good-skill
+description: $(long_description 1025 | sed 's/x/é/g')
+---
+MD
+must_fail "description of 1025 accented characters" 'skills/good-skill/SKILL.md: description is 1025 characters and the limit is 1024'
+
+new_repo
 write_skill good-skill <<'MD'
 ---
 name: good-skill
@@ -429,7 +468,7 @@ name: good-skill
 description: Does a thing. Use when: the thing needs doing.
 ---
 MD
-must_fail "frontmatter that is not valid YAML (a colon inside an unquoted value)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML (line 3: '
+must_fail "frontmatter that is not valid YAML (a colon inside an unquoted value)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML ('
 
 new_repo
 write_skill good-skill <<'MD'
@@ -440,7 +479,7 @@ description: Does a thing.
  version: "1.0"
 ---
 MD
-must_fail "frontmatter that is not valid YAML (bad indentation)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML'
+must_fail "frontmatter that is not valid YAML (bad indentation)" 'skills/good-skill/SKILL.md: the frontmatter is not valid YAML ('
 
 new_repo
 write_skill good-skill <<'MD'
@@ -573,20 +612,41 @@ else
 fi
 cases=$((cases + 1))
 
-# --- No YAML parser ---------------------------------------------------------
+# --- yq or jq missing, or the wrong yq ----------------------------------------
 
-# Run validate.sh with a PATH that has no ruby on it. It must say so plainly.
-new_repo
-mkdir "$work/no-ruby"
-ln -s "$(command -v dirname)" "$work/no-ruby/dirname"
-out="$(PATH="$work/no-ruby" "$BASH" "$validate" "$repo" 2>&1)"
-status=$?
-if [ "$status" -ne 0 ] && grep -qF 'error: validate.sh needs ruby' <<<"$out"; then
-  report ok "fails: no ruby on the PATH" "$out"
-else
-  report FAILED "fails: no ruby on the PATH" "got exit $status and:
+# Run validate.sh with a PATH that holds only the tools named, as links. It
+# must stop with exit 2 and say plainly what is wrong and how to get the tools,
+# before checking anything. "other-yq" stands for the other tool called yq, the
+# Python one, which answers --version the way that one does.
+tool_case() { # tool_case <case> <text> <tool>...
+  local name="$1" text="$2" bin out status tool
+  shift 2
+  new_repo
+  bin="$work/bin-$cases"
+  mkdir "$bin"
+  for tool in dirname "$@"; do
+    if [ "$tool" = other-yq ]; then
+      printf '#!/bin/sh\necho "yq 3.4.3"\n' > "$bin/yq"
+      chmod +x "$bin/yq"
+    else
+      ln -s "$(command -v "$tool")" "$bin/$tool"
+    fi
+  done
+  out="$(PATH="$bin" "$BASH" "$validate" "$repo" 2>&1)"
+  status=$?
+  if [ "$status" -eq 2 ] && grep -qF -- "$text" <<<"$out" && grep -qF 'brew install yq' <<<"$out" \
+    && ! grep -q 'command not found' <<<"$out"; then
+    report ok "stops: $name" "$out"
+  else
+    report FAILED "stops: $name" "expected exit 2, a brew install line and: $text
+got exit $status and:
 $out"
-fi
+  fi
+}
+
+tool_case "no yq on the PATH" 'error: validate.sh needs yq, and there is no yq on the PATH.' jq
+tool_case "no jq on the PATH" 'error: validate.sh needs jq, and there is no jq on the PATH.' yq
+tool_case "the other yq (the Python one)" 'This one says: yq 3.4.3' jq other-yq
 
 echo
 if [ "$failures" -gt 0 ]; then
