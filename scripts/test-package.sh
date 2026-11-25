@@ -131,7 +131,6 @@ check "and package.sh says the skill has changes that are not committed" \
 new_repo
 commit_all
 pack
-cases=$((cases + 1))
 check "a skill with nothing uncommitted gets no such line" '! grep -q "not committed" <<<"$out"' "$out"
 
 new_repo
