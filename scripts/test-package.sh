@@ -253,6 +253,14 @@ check "and again in another time zone, with other file times and permissions" \
   '[ "$status" -eq 0 ] && cmp -s "$work/first.zip" "$repo/dist/good-skill.zip"' \
   "$(checksum "$repo/dist/good-skill.zip")"
 
+# Nor must the line-ending setting of whoever runs it.
+cases=$((cases + 1))
+case_git config core.autocrlf true
+pack
+check "and again with git set to convert line endings" \
+  '[ "$status" -eq 0 ] && cmp -s "$work/first.zip" "$repo/dist/good-skill.zip"' \
+  "$(checksum "$repo/dist/good-skill.zip")"
+
 # A second checkout of the same commit.
 cases=$((cases + 1))
 original="$repo"
