@@ -152,7 +152,8 @@ Adding this repository as a marketplace does neither.
    `description`, `license`, `compatibility`, `metadata` and `allowed-tools`.
    Otherwise say "No": `./scripts/package.sh` skips the skill, and releases
    have no zip for it.
-4. Check it:
+4. Check it. `./scripts/validate.sh` needs `yq` and `jq`; on macOS, install
+   them with `brew install yq jq`.
 
    ```bash
    ./scripts/validate.sh
