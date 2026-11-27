@@ -142,26 +142,8 @@ Adding this repository as a marketplace does neither.
 
 ## issue-flow notes
 
-`issue-flow` works in three desktop apps: Claude, ChatGPT and GitHub Copilot.
-It reads a short guide for the app it finds itself in, from
-[skills/issue-flow/references](skills/issue-flow/references). The Claude guide
-is the one that has been used for real runs. The ChatGPT and GitHub Copilot
-guides were written from those apps' own lists of their tools and haven't been
-through a full run yet.
-
-The Claude desktop app can send a notification to your phone. The other two
-can't, so there `issue-flow` runs a script of yours, if you have one, with the
-line to send as its one argument. Put it at `~/.config/issue-flow/notify` and
-make it executable. For example, with [ntfy](https://ntfy.sh), replacing
-`<your-topic>` with a topic name only you know:
-
-```bash
-#!/bin/sh
-curl -fsS -d "$1" "https://ntfy.sh/<your-topic>" > /dev/null
-```
-
-Without the script, `issue-flow` writes the line in its own session instead,
-and you see it when you come back to the app.
+For how to install and run the skill, prepare a project, and receive
+notifications, see the [issue-flow README](skills/issue-flow/README.md).
 
 ## Adding a skill
 
