@@ -34,7 +34,7 @@ knowing:
   travel with the skill. `gh skill publish` warns when it is missing.
 - `compatibility`: what the skill needs in order to work, in 500 characters or
   fewer. Add it only when the skill needs a specific tool or setup, for example
-  `compatibility: Works only in the Claude desktop app, because it needs the app's session tools.`
+  `compatibility: Works in the Claude, ChatGPT and GitHub Copilot desktop apps, because it needs an app's session tools. It doesn't work in their command-line tools.`
 
 Add any other field only when a tool needs it. The Claude apps reject an
 uploaded skill whose frontmatter has any key other than `name`, `description`,

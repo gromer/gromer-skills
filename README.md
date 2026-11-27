@@ -10,7 +10,7 @@ work. The "Works in" column below says where each skill works.
 
 | Skill | What it does | Works in | Upload to the Claude apps |
 |---|---|---|---|
-| [issue-flow](skills/issue-flow/SKILL.md) | Takes GitHub issues from plan to merged PR by running coding, review and owner-testing sessions as a project manager. | Claude desktop app only (it needs the app's session tools) | No. Install it in Claude Code instead; see [In the Claude apps](#in-the-claude-apps-claudeai-and-desktop). |
+| [issue-flow](skills/issue-flow/SKILL.md) | Takes GitHub issues from plan to merged PR by running coding, review and owner-testing sessions as a project manager. | The Claude, ChatGPT and GitHub Copilot desktop apps (it needs an app's session tools). Not their command-line tools. See [issue-flow notes](#issue-flow-notes). | No. Install it with the GitHub CLI or as a plugin instead; see [In the Claude apps](#in-the-claude-apps-claudeai-and-desktop). |
 
 ## Install
 
@@ -98,7 +98,7 @@ For a skill that can be uploaded:
 3. Turn the skill on.
 
 `issue-flow` can't be uploaded, and no release has a zip for it. Its
-frontmatter has Claude Code-only keys, and it needs the Claude desktop app's
+frontmatter has Claude Code-only keys, and in Claude it needs the desktop app's
 Code session tools. Install it in Claude Code instead, with the GitHub CLI:
 
 ```bash
@@ -139,6 +139,29 @@ plugin has to be
 by a workspace admin, or
 [submitted to the public plugin directory](https://developers.openai.com/plugins/deploy/submission).
 Adding this repository as a marketplace does neither.
+
+## issue-flow notes
+
+`issue-flow` works in three desktop apps: Claude, ChatGPT and GitHub Copilot.
+It reads a short guide for the app it finds itself in, from
+[skills/issue-flow/references](skills/issue-flow/references). The Claude guide
+is the one that has been used for real runs. The ChatGPT and GitHub Copilot
+guides were written from those apps' own lists of their tools and haven't been
+through a full run yet.
+
+The Claude desktop app can send a notification to your phone. The other two
+can't, so there `issue-flow` runs a script of yours, if you have one, with the
+line to send as its one argument. Put it at `~/.config/issue-flow/notify` and
+make it executable. For example, with [ntfy](https://ntfy.sh), replacing
+`<your-topic>` with a topic name only you know:
+
+```bash
+#!/bin/sh
+curl -fsS -d "$1" "https://ntfy.sh/<your-topic>" > /dev/null
+```
+
+Without the script, `issue-flow` writes the line in its own session instead,
+and you see it when you come back to the app.
 
 ## Adding a skill
 
